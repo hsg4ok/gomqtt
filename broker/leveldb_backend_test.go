@@ -40,7 +40,8 @@ func TestLevelDBBackendQueueSequenceUniqueWithinBatch(t *testing.T) {
 	if err := b.db.Write(batch, b.writeOptions); err != nil { t.Fatal(err) }
 	msg := &packet.Message{Topic:"jobs/print", Payload:[]byte("one"), QOS:packet.QOSAtLeastOnce}
 	batch = new(leveldb.Batch)
-	if err := b.enqueueBatch(batch, s, msg); err != nil { t.Fatal(err) }
+	pendingCounts := make(map[string]int)
+	if err := b.enqueueBatch(batch, s, msg, pendingCounts); err != nil { t.Fatal(err) }
 	if err := b.enqueueBatch(batch, s, msg); err != nil { t.Fatal(err) }
 	if err := b.db.Write(batch, b.writeOptions); err != nil { t.Fatal(err) }
 	iter := b.db.NewIterator(nil, nil)
@@ -180,7 +181,7 @@ func TestLevelDBBackendQoS0IsNotStoredForOfflineSession(t *testing.T) {
 	s := &levelBrokerSession{id:"offline", persistent:true, subscriptions:topic.NewStandardTree()}
 	batch := new(leveldb.Batch)
 	msg := &packet.Message{Topic:"agent/jobs", Payload:[]byte("qos0"), QOS:packet.QOSAtMostOnce}
-	if err := backend.enqueueBatch(batch, s, msg); err != nil { t.Fatal(err) }
+	if err := backend.enqueueBatch(batch, s, msg, make(map[string]int)); err != nil { t.Fatal(err) }
 	if batch.Len() != 0 { t.Fatalf("offline QoS0 unexpectedly persisted %d batch bytes", batch.Len()) }
 }
 
