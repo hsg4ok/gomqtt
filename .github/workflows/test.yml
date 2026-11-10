@@ -1,22 +1,29 @@
-on: [push, pull_request]
 name: Test
+
+on:
+  push:
+  pull_request:
+
 jobs:
   test:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
-      - name: Install
-        uses: actions/setup-go@v2
-        with:
-          go-version: 1.16.x
       - name: Checkout
-        uses: actions/checkout@v2
-      - name: Prepare
+        uses: actions/checkout@v4
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.23.x"
+          cache: true
+      - name: Install Mosquitto
         run: |
-          sudo apt-add-repository ppa:mosquitto-dev/mosquitto-ppa -y
-          sudo apt-get update -y
-          sudo apt-get install mosquitto=1.6.9-1
-          sudo service mosquitto start
-          go get filippo.io/mkcert
-          make cert
-      - name: Test
-        run: go test ./...
+          sudo apt-get update
+          sudo apt-get install -y mosquitto
+          sudo systemctl enable --now mosquitto
+      - name: Install mkcert
+        run: go install filippo.io/mkcert@v1.4.4
+      - name: Generate test TLS certificates
+        run: make cert
+      - name: Run all tests
+        run: go test -mod=mod ./...
