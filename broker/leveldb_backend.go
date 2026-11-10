@@ -45,6 +45,7 @@ type LevelDBBackend struct {
 	mu sync.Mutex
 	setupMu sync.Mutex
 	closing bool
+	queueSeq uint64
 	active map[string]*Client
 	persistent map[string]*levelBrokerSession
 	temporary map[*Client]*levelBrokerSession
@@ -85,8 +86,13 @@ func OpenLevelDBBackend(path string, options ...LevelDBBackendOptions) (*LevelDB
 	db, err := leveldb.OpenFile(path, nil)
 	if err != nil { return nil, fmt.Errorf("leveldb backend: open database: %w", err) }
 	write := &opt.WriteOptions{Sync: opts.SyncWrites}
+	var queueSeq uint64
+	if raw, getErr := db.Get([]byte(levelBackendPrefix+"queue-sequence"), nil); getErr == nil {
+		if len(raw) != 8 { _ = db.Close(); return nil, errors.New("leveldb backend: invalid queue sequence") }
+		queueSeq = binary.BigEndian.Uint64(raw)
+	} else if getErr != leveldb.ErrNotFound { _ = db.Close(); return nil, fmt.Errorf("leveldb backend: read queue sequence: %w", getErr) }
 	return &LevelDBBackend{
-		db: db, opts: opts, writeOptions: write,
+		db: db, opts: opts, writeOptions: write, queueSeq: queueSeq,
 		active: make(map[string]*Client),
 		persistent: make(map[string]*levelBrokerSession),
 		temporary: make(map[*Client]*levelBrokerSession),
@@ -150,6 +156,10 @@ func (b *LevelDBBackend) Setup(client *Client, id string, clean bool) (Session, 
 	if b.closing { return nil, false, ErrClosing }
 
 	if id == "" || clean {
+		if id != "" {
+			if err := b.deletePersistentSession(id); err != nil { return nil, false, err }
+			delete(b.persistent, id)
+		}
 		s := &levelBrokerSession{
 			id: id, persistent: false, packets: sessionpkg.NewMemorySession(),
 			subscriptions: topic.NewStandardTree(),
@@ -342,17 +352,30 @@ func (b *LevelDBBackend) enqueueBatch(batch *leveldb.Batch, s *levelBrokerSessio
 }
 
 func (b *LevelDBBackend) nextQueueID(batch *leveldb.Batch) (uint64, error) {
-	key := []byte(levelBackendPrefix + "queue-sequence")
-	var next uint64 = 1
-	data, err := b.db.Get(key, nil)
-	if err == nil {
-		if len(data) != 8 { return 0, errors.New("leveldb backend: invalid queue sequence") }
-		next = binary.BigEndian.Uint64(data) + 1
-	} else if err != leveldb.ErrNotFound { return 0, err }
+	if b.queueSeq == ^uint64(0) { return 0, errors.New("leveldb backend: queue sequence exhausted") }
+	b.queueSeq++
 	var encoded [8]byte
-	binary.BigEndian.PutUint64(encoded[:], next)
-	batch.Put(key, encoded[:])
-	return next, nil
+	binary.BigEndian.PutUint64(encoded[:], b.queueSeq)
+	batch.Put([]byte(levelBackendPrefix+"queue-sequence"), encoded[:])
+	return b.queueSeq, nil
+}
+
+func (b *LevelDBBackend) deletePersistentSession(id string) error {
+	batch := new(leveldb.Batch)
+	for _, prefix := range [][]byte{
+		backendSessionPrefix(id),
+		[]byte("gomqtt:session:" + encodeBackendID(id) + ":"),
+	} {
+		iter := b.db.NewIterator(nil, nil)
+		for iter.Seek(prefix); iter.Valid() && len(iter.Key()) >= len(prefix) && string(iter.Key()[:len(prefix)]) == string(prefix); iter.Next() {
+			batch.Delete(append([]byte(nil), iter.Key()...))
+		}
+		if err := iter.Error(); err != nil { iter.Release(); return fmt.Errorf("leveldb backend: scan session deletion: %w", err) }
+		iter.Release()
+	}
+	batch.Delete(backendSessionKey(id))
+	if err := b.db.Write(batch, b.writeOptions); err != nil { return fmt.Errorf("leveldb backend: delete clean session: %w", err) }
+	return nil
 }
 
 func (b *LevelDBBackend) listPersistentIDs() ([]string, error) {
