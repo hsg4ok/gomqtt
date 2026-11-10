@@ -175,3 +175,33 @@ func TestLevelDBBackendQoS0IsNotStoredForOfflineSession(t *testing.T) {
 	if err := backend.enqueueBatch(batch, s, msg); err != nil { t.Fatal(err) }
 	if batch.Len() != 0 { t.Fatalf("offline QoS0 unexpectedly persisted %d batch bytes", batch.Len()) }
 }
+
+
+func TestLevelDBBackendRetainedDeliveryRespectsSubscriptionQoS(t *testing.T) {
+	backend := openLevelDBBackendTest(t)
+	client := newBackendTestClient(t, backend, "retained-subscriber")
+	retained := &packet.Message{
+		Topic: "devices/printer-1/status",
+		Payload: []byte("ready"),
+		QOS: packet.QOSExactlyOnce,
+		Retain: true,
+	}
+	encoded, err := json.Marshal(storedMessage{Message:*retained})
+	if err != nil { t.Fatal(err) }
+	if err := backend.db.Put(backendRetainedKey(retained.Topic), encoded, backend.writeOptions); err != nil { t.Fatal(err) }
+
+	if err := backend.Subscribe(client, []packet.Subscription{{
+		Topic: "devices/+/status",
+		QOS: packet.QOSAtLeastOnce,
+	}}, nil); err != nil { t.Fatal(err) }
+
+	got, ack, err := backend.Dequeue(client)
+	if err != nil { t.Fatal(err) }
+	if got == nil { t.Fatal("expected retained message") }
+	if got.QOS != packet.QOSAtLeastOnce { t.Fatalf("retained qos = %d, want qos1", got.QOS) }
+	if !got.Retain { t.Fatal("retained delivery must keep Retain flag set") }
+	if string(got.Payload) != "ready" { t.Fatalf("payload = %q", got.Payload) }
+	if ack == nil { t.Fatal("QoS1 retained delivery must be acknowledged") }
+	ack()
+	closeBackendTestClient(t, backend, client)
+}
