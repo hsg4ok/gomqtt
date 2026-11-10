@@ -42,7 +42,7 @@ func TestLevelDBBackendQueueSequenceUniqueWithinBatch(t *testing.T) {
 	batch = new(leveldb.Batch)
 	pendingCounts := make(map[string]int)
 	if err := b.enqueueBatch(batch, s, msg, pendingCounts); err != nil { t.Fatal(err) }
-	if err := b.enqueueBatch(batch, s, msg); err != nil { t.Fatal(err) }
+	if err := b.enqueueBatch(batch, s, msg, pendingCounts); err != nil { t.Fatal(err) }
 	if err := b.db.Write(batch, b.writeOptions); err != nil { t.Fatal(err) }
 	iter := b.db.NewIterator(nil, nil)
 	defer iter.Release()
