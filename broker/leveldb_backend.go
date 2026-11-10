@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -387,8 +388,11 @@ func (b *LevelDBBackend) listPersistentIDs() ([]string, error) {
 		key := string(iter.Key())
 		if len(key) == len(prefix) { continue }
 		encoded := key[len(prefix):]
-		// The registry record is exact; subkeys are ignored.
-		if len(encoded) == 0 || encoded[len(encoded)-1] == ':' { continue }
+		// Ignore metadata and queue keys below a registry entry.
+		if len(encoded) == 0 { continue }
+		if separator := strings.IndexByte(encoded, ':'); separator >= 0 {
+			continue
+		}
 		idBytes, err := base64.RawURLEncoding.DecodeString(encoded)
 		if err != nil { return nil, fmt.Errorf("leveldb backend: decode client ID: %w", err) }
 		ids = append(ids, string(idBytes))
