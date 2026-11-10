@@ -88,9 +88,17 @@ func OpenLevelDBBackend(path string, options ...LevelDBBackendOptions) (*LevelDB
 	write := &opt.WriteOptions{Sync: true}
 	var queueSeq uint64
 	if raw, getErr := db.Get([]byte(levelBackendPrefix+"queue-sequence"), nil); getErr == nil {
-		if len(raw) != 8 { _ = db.Close(); return nil, errors.New("leveldb backend: invalid queue sequence") }
+		if len(raw) != 8 {
+			closeErr := db.Close()
+			if closeErr != nil { return nil, fmt.Errorf("leveldb backend: invalid queue sequence; close database: %v", closeErr) }
+			return nil, errors.New("leveldb backend: invalid queue sequence")
+		}
 		queueSeq = binary.BigEndian.Uint64(raw)
-	} else if getErr != leveldb.ErrNotFound { _ = db.Close(); return nil, fmt.Errorf("leveldb backend: read queue sequence: %w", getErr) }
+	} else if getErr != leveldb.ErrNotFound {
+		closeErr := db.Close()
+		if closeErr != nil { return nil, fmt.Errorf("leveldb backend: read queue sequence: %v; close database: %w", getErr, closeErr) }
+		return nil, fmt.Errorf("leveldb backend: read queue sequence: %w", getErr)
+	}
 	return &LevelDBBackend{
 		db: db, opts: opts, writeOptions: write, queueSeq: queueSeq,
 		active: make(map[string]*Client),
