@@ -266,6 +266,7 @@ func (b *LevelDBBackend) Subscribe(client *Client, subs []packet.Subscription, a
 		for _, value := range values {
 			msg := value.(*packet.Message).Copy()
 			msg.Retain = true
+			if msg.QOS > sub.QOS { msg.QOS = sub.QOS }
 			if err := b.enqueueBatch(batch, s, msg); err != nil { return err }
 		}
 	}
