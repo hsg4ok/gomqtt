@@ -3,8 +3,12 @@ package broker
 import (
 	"encoding/binary"
 	"encoding/json"
+	"io"
+	"net"
 	"path/filepath"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/256dpi/gomqtt/packet"
 	"github.com/256dpi/gomqtt/topic"
@@ -95,18 +99,6 @@ func TestLevelDBBackendQueueSequenceStoredBigEndian(t *testing.T) {
 	if got := binary.BigEndian.Uint64(raw); got != id { t.Fatalf("stored sequence = %d, want %d", got, id) }
 }
 
-package broker
-
-import (
-	"io"
-	"net"
-	"path/filepath"
-	"sync"
-	"testing"
-	"time"
-
-	"github.com/256dpi/gomqtt/packet"
-)
 
 type levelDBTestConn struct {
 	closed chan struct{}
