@@ -44,7 +44,9 @@ type LevelDBBackend struct {
 	writeOptions *opt.WriteOptions
 	mu sync.Mutex
 	setupMu sync.Mutex
+	closeMu sync.Mutex
 	closing bool
+	dbClosed bool
 	queueSeq uint64
 	active map[string]*Client
 	persistent map[string]*levelBrokerSession
@@ -180,6 +182,7 @@ func (b *LevelDBBackend) Setup(client *Client, id string, clean bool) (Session, 
 			s = &levelBrokerSession{
 				id: id, persistent: true,
 				subscriptions: topic.NewStandardTree(),
+				memoryQueue: make(chan *packet.Message, b.opts.SessionQueueSize),
 			}
 			if err := b.saveSubscriptions(s); err != nil { return nil, false, err }
 			if err := b.db.Put(backendSessionKey(id), []byte{1}, b.writeOptions); err != nil {
@@ -200,7 +203,7 @@ func (b *LevelDBBackend) loadPersistentSession(id string) (*levelBrokerSession, 
 
 	packets, err := sessionpkg.NewLevelDBSession(b.db, encodeBackendID(id))
 	if err != nil { return nil, err }
-	s := &levelBrokerSession{id:id, persistent:true, packets:packets, subscriptions:topic.NewStandardTree()}
+	s := &levelBrokerSession{id:id, persistent:true, packets:packets, subscriptions:topic.NewStandardTree(), memoryQueue:make(chan *packet.Message, b.opts.SessionQueueSize)}
 	data, err := b.db.Get(append(backendSessionPrefix(id), []byte("subscriptions")...), nil)
 	if err != nil && err != leveldb.ErrNotFound { return nil, fmt.Errorf("leveldb backend: load subscriptions: %w", err) }
 	if err == nil {
@@ -343,6 +346,17 @@ func (b *LevelDBBackend) enqueueBatch(batch *leveldb.Batch, s *levelBrokerSessio
 			return ErrQueueFull
 		}
 	}
+	// QoS 0 is not stored for offline persistent sessions. It is buffered
+	// only while the persistent session is connected.
+	if msg.QOS == packet.QOSAtMostOnce {
+		if s.active == nil { return nil }
+		select {
+		case s.memoryQueue <- msg:
+			return nil
+		default:
+			return ErrQueueFull
+		}
+	}
 	seq, err := b.nextQueueID(batch)
 	if err != nil { return err }
 	data, err := json.Marshal(storedMessage{Message:*msg})
@@ -442,10 +456,16 @@ func (b *LevelDBBackend) Dequeue(client *Client) (*packet.Message, Ack, error) {
 	}
 	prefix := backendQueuePrefix(s.id)
 	for {
+		select {
+		case msg := <-s.memoryQueue:
+			return msg, nil, nil
+		default:
+		}
 		iter := b.db.NewIterator(nil, nil)
 		if !iter.Seek(prefix) {
 			iter.Release()
 			select {
+			case msg := <-s.memoryQueue: return msg, nil, nil
 			case <-time.After(100 * time.Millisecond):
 			case <-client.Closing(): return nil, nil, nil
 			}
@@ -504,20 +524,48 @@ func (b *LevelDBBackend) Log(event LogEvent, client *Client, pkt packet.Generic,
 // false when clients did not finish within timeout; in that case the database
 // is deliberately kept open so their cleanup paths can still use it.
 func (b *LevelDBBackend) Close(timeout time.Duration) bool {
+	b.closeMu.Lock()
+	defer b.closeMu.Unlock()
+
 	b.mu.Lock()
-	if b.closing { b.mu.Unlock(); return false }
+	if b.dbClosed {
+		b.mu.Unlock()
+		return true
+	}
 	b.closing = true
 	clients := make([]*Client, 0, len(b.active)+len(b.temporary))
-	for _, c := range b.active { if c != nil { clients = append(clients, c); c.Close() } }
-	for c := range b.temporary { if c != nil { clients = append(clients, c); c.Close() } }
-	b.mu.Unlock()
-	deadline := time.NewTimer(timeout)
-	defer deadline.Stop()
-	for _, c := range clients {
-		select {
-		case <-c.Closed():
-		case <-deadline.C: return false
+	seen := make(map[*Client]bool)
+	for _, client := range b.active {
+		if client != nil && !seen[client] {
+			seen[client] = true
+			clients = append(clients, client)
+			client.Close()
 		}
 	}
-	return b.db.Close() == nil
+	for client := range b.temporary {
+		if client != nil && !seen[client] {
+			seen[client] = true
+			clients = append(clients, client)
+			client.Close()
+		}
+	}
+	b.mu.Unlock()
+
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	for _, client := range clients {
+		select {
+		case <-client.Closed():
+		case <-timer.C:
+			return false
+		}
+	}
+	if err := b.db.Close(); err != nil {
+		b.Log(BackendError, nil, nil, nil, fmt.Errorf("leveldb backend: close database: %w", err))
+		return false
+	}
+	b.mu.Lock()
+	b.dbClosed = true
+	b.mu.Unlock()
+	return true
 }
