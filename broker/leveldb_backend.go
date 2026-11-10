@@ -176,7 +176,8 @@ func (b *LevelDBBackend) Setup(client *Client, id string, clean bool) (Session, 
 
 	s, exists := b.persistent[id]
 	if !exists {
-		s, err := b.loadPersistentSession(id)
+		var err error
+		s, err = b.loadPersistentSession(id)
 		if err != nil { return nil, false, err }
 		exists = s != nil
 		if s == nil {
