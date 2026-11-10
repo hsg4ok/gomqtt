@@ -29,7 +29,6 @@ type LevelDBBackendOptions struct {
 	ClientTokenTimeout time.Duration
 	Credentials map[string]string
 	Logger func(LogEvent, *Client, packet.Generic, *packet.Message, error)
-	SyncWrites bool
 }
 
 func (o *LevelDBBackendOptions) defaults() {
@@ -86,7 +85,8 @@ func OpenLevelDBBackend(path string, options ...LevelDBBackendOptions) (*LevelDB
 	opts.defaults()
 	db, err := leveldb.OpenFile(path, nil)
 	if err != nil { return nil, fmt.Errorf("leveldb backend: open database: %w", err) }
-	write := &opt.WriteOptions{Sync: opts.SyncWrites}
+	// MQTT session and queue writes are synchronously flushed before ACKs.
+	write := &opt.WriteOptions{Sync: true}
 	var queueSeq uint64
 	if raw, getErr := db.Get([]byte(levelBackendPrefix+"queue-sequence"), nil); getErr == nil {
 		if len(raw) != 8 { _ = db.Close(); return nil, errors.New("leveldb backend: invalid queue sequence") }
@@ -254,7 +254,8 @@ func (b *LevelDBBackend) Subscribe(client *Client, subs []packet.Subscription, a
 
 	batch := new(leveldb.Batch)
 	for _, sub := range subs {
-		values := b.retainedSearch(sub.Topic)
+		values, err := b.retainedSearch(sub.Topic)
+		if err != nil { return err }
 		for _, value := range values {
 			msg := value.(*packet.Message).Copy()
 			msg.Retain = true
@@ -402,7 +403,7 @@ func (b *LevelDBBackend) listPersistentIDs() ([]string, error) {
 	return ids, nil
 }
 
-func (b *LevelDBBackend) retainedSearch(filter string) []interface{} {
+func (b *LevelDBBackend) retainedSearch(filter string) ([]interface{}, error) {
 	iter := b.db.NewIterator(nil, nil)
 	defer iter.Release()
 	prefix := []byte(levelBackendPrefix + levelRetainedPrefix)
@@ -413,11 +414,13 @@ func (b *LevelDBBackend) retainedSearch(filter string) []interface{} {
 		if err != nil { continue }
 		data := append([]byte(nil), iter.Value()...)
 		var stored storedMessage
-		if json.Unmarshal(data, &stored) == nil && topicMatches(filter, string(topicBytes)) {
-			values = append(values, &stored.Message)
+		if err := json.Unmarshal(data, &stored); err != nil {
+			return nil, fmt.Errorf("%w: %v", errInvalidStoredMessage, err)
 		}
+		if topicMatches(filter, string(topicBytes)) { values = append(values, &stored.Message) }
 	}
-	return values
+	if err := iter.Error(); err != nil { return nil, fmt.Errorf("leveldb backend: iterate retained messages: %w", err) }
+	return values, nil
 }
 
 func topicMatches(filter, name string) bool {
