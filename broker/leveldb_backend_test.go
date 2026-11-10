@@ -4,6 +4,8 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"io"
+	"io/ioutil"
+	"os"
 	"net"
 	"path/filepath"
 	"sync"
@@ -17,7 +19,10 @@ import (
 
 func openLevelDBBackendTest(t *testing.T) *LevelDBBackend {
 	t.Helper()
-	b, err := OpenLevelDBBackend(filepath.Join(t.TempDir(), "broker.db"))
+	dir, err := ioutil.TempDir("", "gomqtt-broker-test-")
+	if err != nil { t.Fatal(err) }
+	t.Cleanup(func() { if err := os.RemoveAll(dir); err != nil { t.Error(err) } })
+	b, err := OpenLevelDBBackend(filepath.Join(dir, "broker.db"))
 	if err != nil { t.Fatal(err) }
 	t.Cleanup(func() { if err := b.db.Close(); err != nil { t.Error(err) } })
 	return b
@@ -136,7 +141,10 @@ func closeBackendTestClient(t *testing.T, backend *LevelDBBackend, client *Clien
 }
 
 func TestLevelDBBackendOfflineQoS1DeliverySurvivesRestart(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "persistent-broker.db")
+	dir, err := ioutil.TempDir("", "gomqtt-restart-test-")
+	if err != nil { t.Fatal(err) }
+	t.Cleanup(func() { if err := os.RemoveAll(dir); err != nil { t.Error(err) } })
+	path := filepath.Join(dir, "persistent-broker.db")
 	backend, err := OpenLevelDBBackend(path)
 	if err != nil { t.Fatal(err) }
 	client := newBackendTestClient(t, backend, "printer-agent-01")
