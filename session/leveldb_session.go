@@ -186,7 +186,8 @@ func (s *LevelDBSession) AllPackets(dir Direction) ([]packet.Generic, error) {
 func (s *LevelDBSession) Reset() error {
 	batch := new(leveldb.Batch)
 	for _, dir := range []Direction{Incoming, Outgoing} {
-		d, _ := packetDirection(dir)
+		d, err := packetDirection(dir)
+		if err != nil { return err }
 		prefix := append(append([]byte(nil), s.prefix...), 'p', d)
 		iter := s.db.NewIterator(nil, nil)
 		for iter.Seek(prefix); iter.Valid() && len(iter.Key()) >= len(prefix) && string(iter.Key()[:len(prefix)]) == string(prefix); iter.Next() {
