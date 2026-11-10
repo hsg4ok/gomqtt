@@ -342,7 +342,7 @@ func (b *LevelDBBackend) Publish(_ *Client, msg *packet.Message, ack Ack) error 
 			copyMsg := msg.Copy()
 			copyMsg.Retain = false
 			if copyMsg.QOS > sub.(*packet.Subscription).QOS { copyMsg.QOS = sub.(*packet.Subscription).QOS }
-			if err := b.enqueueBatch(batch, s, copyMsg); err != nil { return err }
+			if err := b.enqueueBatch(batch, s, copyMsg, pendingCounts); err != nil { return err }
 		}
 	}
 	if err := b.db.Write(batch, b.writeOptions); err != nil { return fmt.Errorf("leveldb backend: persist publish: %w", err) }
