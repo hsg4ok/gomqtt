@@ -84,3 +84,48 @@ func TestLevelDBSessionRejectsInvalidDirection(t *testing.T) {
 		t.Fatalf("got %v, want ErrInvalidPacketDirection", err)
 	}
 }
+
+
+func TestLevelDBSessionConcurrentNextID(t *testing.T) {
+	db, _ := openTestDB(t)
+	defer db.Close()
+	s, err := NewLevelDBSession(db, "concurrent")
+	if err != nil { t.Fatal(err) }
+
+	const workers = 128
+	ids := make(chan packet.ID, workers)
+	var wg sync.WaitGroup
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			ids <- s.NextID()
+		}()
+	}
+	wg.Wait()
+	close(ids)
+
+	seen := make(map[packet.ID]bool, workers)
+	for id := range ids {
+		if !id.Valid() { t.Fatal("NextID returned invalid ID") }
+		if seen[id] { t.Fatalf("duplicate packet ID %d", id) }
+		seen[id] = true
+	}
+	if len(seen) != workers { t.Fatalf("got %d unique IDs, want %d", len(seen), workers) }
+}
+
+func TestLevelDBSessionResetClearsPacketsAndCounter(t *testing.T) {
+	db, _ := openTestDB(t)
+	defer db.Close()
+	s, err := NewLevelDBSession(db, "reset")
+	if err != nil { t.Fatal(err) }
+	p := packet.NewPuback()
+	p.ID = 7
+	if err := s.SavePacket(Outgoing, p); err != nil { t.Fatal(err) }
+	if got := s.NextID(); got != 1 { t.Fatalf("first ID = %d, want 1", got) }
+	if err := s.Reset(); err != nil { t.Fatal(err) }
+	all, err := s.AllPackets(Outgoing)
+	if err != nil { t.Fatal(err) }
+	if len(all) != 0 { t.Fatalf("Reset left %d packets", len(all)) }
+	if got := s.NextID(); got != 1 { t.Fatalf("ID after Reset = %d, want 1", got) }
+}
