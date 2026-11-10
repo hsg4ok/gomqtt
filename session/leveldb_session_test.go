@@ -1,6 +1,8 @@
 package session
 
 import (
+	"io/ioutil"
+	"os"
 	"path/filepath"
 	"sync"
 	"testing"
@@ -11,7 +13,10 @@ import (
 
 func openTestDB(t *testing.T) (*leveldb.DB, string) {
 	t.Helper()
-	path := filepath.Join(t.TempDir(), "db")
+	dir, err := ioutil.TempDir("", "gomqtt-session-test-")
+	if err != nil { t.Fatal(err) }
+	t.Cleanup(func() { if err := os.RemoveAll(dir); err != nil { t.Error(err) } })
+	path := filepath.Join(dir, "db")
 	db, err := leveldb.OpenFile(path, nil)
 	if err != nil { t.Fatal(err) }
 	return db, path
