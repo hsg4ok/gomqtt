@@ -178,9 +178,12 @@ func (b *LevelDBBackend) Setup(client *Client, id string, clean bool) (Session, 
 	if !exists {
 		s, err := b.loadPersistentSession(id)
 		if err != nil { return nil, false, err }
+		exists = s != nil
 		if s == nil {
+			packets, err := sessionpkg.NewLevelDBSession(b.db, encodeBackendID(id))
+			if err != nil { return nil, false, err }
 			s = &levelBrokerSession{
-				id: id, persistent: true,
+				id: id, persistent: true, packets: packets,
 				subscriptions: topic.NewStandardTree(),
 				memoryQueue: make(chan *packet.Message, b.opts.SessionQueueSize),
 			}
