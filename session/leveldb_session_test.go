@@ -2,6 +2,7 @@ package session
 
 import (
 	"path/filepath"
+	"sync"
 	"testing"
 
 	"github.com/256dpi/gomqtt/packet"
