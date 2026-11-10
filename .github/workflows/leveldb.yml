@@ -23,6 +23,11 @@ jobs:
         run: go mod download
       - name: Compile and test changed packages
         run: go test -mod=mod ./broker ./session
+      - name: Pure-Go build (CGO disabled)
+        if: matrix.go-version == '1.23.x'
+        env:
+          CGO_ENABLED: "0"
+        run: go test -mod=mod ./broker ./session
       - name: Race tests
         if: matrix.go-version == '1.23.x'
         run: go test -mod=mod -race ./broker ./session
