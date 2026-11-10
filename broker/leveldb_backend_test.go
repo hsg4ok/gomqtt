@@ -214,3 +214,26 @@ func TestLevelDBBackendRetainedDeliveryRespectsSubscriptionQoS(t *testing.T) {
 	ack()
 	closeBackendTestClient(t, backend, client)
 }
+
+
+func TestLevelDBBackendEnforcesPersistentQueueLimit(t *testing.T) {
+	dir, err := ioutil.TempDir("", "gomqtt-queue-limit-")
+	if err != nil { t.Fatal(err) }
+	t.Cleanup(func() { if err := os.RemoveAll(dir); err != nil { t.Error(err) } })
+	backend, err := OpenLevelDBBackend(filepath.Join(dir, "broker.db"), LevelDBBackendOptions{SessionQueueSize:1})
+	if err != nil { t.Fatal(err) }
+	defer func(){ if err := backend.db.Close(); err != nil { t.Error(err) } }()
+
+	s := &levelBrokerSession{id:"limited", persistent:true}
+	message := &packet.Message{Topic:"jobs/print", Payload:[]byte("one"), QOS:packet.QOSAtLeastOnce}
+	batch := new(leveldb.Batch)
+	pending := make(map[string]int)
+	if err := backend.enqueueBatch(batch, s, message, pending); err != nil { t.Fatal(err) }
+	if err := backend.db.Write(batch, backend.writeOptions); err != nil { t.Fatal(err) }
+
+	batch = new(leveldb.Batch)
+	pending = make(map[string]int)
+	if err := backend.enqueueBatch(batch, s, message, pending); err != ErrQueueFull {
+		t.Fatalf("second queued message error = %v, want ErrQueueFull", err)
+	}
+}
