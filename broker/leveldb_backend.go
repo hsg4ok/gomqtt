@@ -474,6 +474,7 @@ func (b *LevelDBBackend) Dequeue(client *Client) (*packet.Message, Ack, error) {
 		if !iter.Valid() || len(iter.Key()) < len(prefix) || string(iter.Key()[:len(prefix)]) != string(prefix) {
 			iter.Release()
 			select {
+			case msg := <-s.memoryQueue: return msg, nil, nil
 			case <-time.After(100 * time.Millisecond):
 			case <-client.Closing(): return nil, nil, nil
 			}
