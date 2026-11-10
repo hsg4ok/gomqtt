@@ -384,9 +384,6 @@ func (b *LevelDBBackend) retainedSearch(filter string) []interface{} {
 		encoded := string(iter.Key()[len(prefix):])
 		topicBytes, err := base64.RawURLEncoding.DecodeString(encoded)
 		if err != nil { continue }
-		// MQTT filter matching is delegated to the same topic tree semantics
-		// used by the in-memory backend.
-		if !topic.NewStandardTree().Search(filterContains(filter, string(topicBytes))).MatchFirst(string(topicBytes)) { /* no-op: see direct matcher below */ }
 		data := append([]byte(nil), iter.Value()...)
 		var stored storedMessage
 		if json.Unmarshal(data, &stored) == nil && topicMatches(filter, string(topicBytes)) {
@@ -395,8 +392,6 @@ func (b *LevelDBBackend) retainedSearch(filter string) []interface{} {
 	}
 	return values
 }
-
-func filterContains(_ string, topicName string) string { return topicName }
 
 func topicMatches(filter, name string) bool {
 	tree := topic.NewStandardTree()
