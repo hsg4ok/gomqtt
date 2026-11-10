@@ -66,10 +66,7 @@ type storedMessage struct {
 	Message packet.Message `json:"message"`
 }
 
-var (
-	errLevelDBBackendClosed = errors.New("leveldb backend closed")
-	errInvalidStoredMessage = errors.New("invalid stored MQTT message")
-)
+var errInvalidStoredMessage = errors.New("invalid stored MQTT message")
 
 const (
 	levelBackendPrefix = "gomqtt:broker:v1:"
@@ -241,6 +238,7 @@ func (b *LevelDBBackend) Restore(*Client) error { return nil }
 func (b *LevelDBBackend) sessionFor(client *Client) (*levelBrokerSession, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	if b.closing || b.dbClosed { return nil, ErrClosing }
 	if s := b.temporary[client]; s != nil { return s, nil }
 	if client != nil {
 		if s := b.persistent[client.ID()]; s != nil && s.active == client { return s, nil }
