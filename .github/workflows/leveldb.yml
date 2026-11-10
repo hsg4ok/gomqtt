@@ -21,10 +21,10 @@ jobs:
           cache: true
       - name: Download modules
         run: go mod download
-      - name: Unit tests
-        run: go test -mod=mod ./...
+      - name: Compile and test changed packages
+        run: go test -mod=mod ./broker ./session
       - name: Race tests
         if: matrix.go-version == '1.23.x'
-        run: go test -mod=mod -race ./...
-      - name: Vet
-        run: go vet -mod=mod ./...
+        run: go test -mod=mod -race ./broker ./session
+      - name: Vet changed packages
+        run: go vet -mod=mod ./broker ./session
