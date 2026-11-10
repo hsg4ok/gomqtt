@@ -266,6 +266,7 @@ func (b *LevelDBBackend) Subscribe(client *Client, subs []packet.Subscription, a
 	if err := b.saveSubscriptions(s); err != nil { return err }
 
 	batch := new(leveldb.Batch)
+	pendingCounts := make(map[string]int)
 	for _, sub := range subs {
 		values, err := b.retainedSearch(sub.Topic)
 		if err != nil { return err }
@@ -273,7 +274,7 @@ func (b *LevelDBBackend) Subscribe(client *Client, subs []packet.Subscription, a
 			msg := value.(*packet.Message).Copy()
 			msg.Retain = true
 			if msg.QOS > sub.QOS { msg.QOS = sub.QOS }
-			if err := b.enqueueBatch(batch, s, msg); err != nil { return err }
+			if err := b.enqueueBatch(batch, s, msg, pendingCounts); err != nil { return err }
 		}
 	}
 	if err := b.db.Write(batch, b.writeOptions); err != nil { return fmt.Errorf("leveldb backend: queue retained messages: %w", err) }
@@ -301,6 +302,7 @@ func (b *LevelDBBackend) Publish(_ *Client, msg *packet.Message, ack Ack) error 
 	if b.closing { return ErrClosing }
 
 	batch := new(leveldb.Batch)
+	pendingCounts := make(map[string]int)
 	if msg.Retain {
 		if len(msg.Payload) == 0 {
 			batch.Delete(backendRetainedKey(msg.Topic))
@@ -331,7 +333,7 @@ func (b *LevelDBBackend) Publish(_ *Client, msg *packet.Message, ack Ack) error 
 			copyMsg := msg.Copy()
 			copyMsg.Retain = false
 			if copyMsg.QOS > sub.(*packet.Subscription).QOS { copyMsg.QOS = sub.(*packet.Subscription).QOS }
-			if err := b.enqueueBatch(batch, s, copyMsg); err != nil { return err }
+			if err := b.enqueueBatch(batch, s, copyMsg, pendingCounts); err != nil { return err }
 		}
 	}
 	for _, s := range b.temporary {
@@ -348,7 +350,7 @@ func (b *LevelDBBackend) Publish(_ *Client, msg *packet.Message, ack Ack) error 
 	return nil
 }
 
-func (b *LevelDBBackend) enqueueBatch(batch *leveldb.Batch, s *levelBrokerSession, msg *packet.Message) error {
+func (b *LevelDBBackend) enqueueBatch(batch *leveldb.Batch, s *levelBrokerSession, msg *packet.Message, pendingCounts map[string]int) error {
 	if !s.persistent {
 		select {
 		case s.memoryQueue <- msg:
@@ -368,6 +370,14 @@ func (b *LevelDBBackend) enqueueBatch(batch *leveldb.Batch, s *levelBrokerSessio
 			return ErrQueueFull
 		}
 	}
+	count, ok := pendingCounts[s.id]
+	if !ok {
+		var err error
+		count, err = b.countQueuedMessages(s.id)
+		if err != nil { return err }
+	}
+	if count >= b.opts.SessionQueueSize { return ErrQueueFull }
+	pendingCounts[s.id] = count + 1
 	seq, err := b.nextQueueID(batch)
 	if err != nil { return err }
 	data, err := json.Marshal(storedMessage{Message:*msg})
@@ -376,6 +386,19 @@ func (b *LevelDBBackend) enqueueBatch(batch *leveldb.Batch, s *levelBrokerSessio
 	binary.BigEndian.PutUint64(key[len(key)-8:], seq)
 	batch.Put(key, data)
 	return nil
+}
+
+func (b *LevelDBBackend) countQueuedMessages(id string) (int, error) {
+	prefix := backendQueuePrefix(id)
+	iter := b.db.NewIterator(nil, nil)
+	defer iter.Release()
+	count := 0
+	for iter.Seek(prefix); iter.Valid() && len(iter.Key()) >= len(prefix) && string(iter.Key()[:len(prefix)]) == string(prefix); iter.Next() {
+		count++
+		if count > b.opts.SessionQueueSize { break }
+	}
+	if err := iter.Error(); err != nil { return 0, fmt.Errorf("leveldb backend: count queued messages: %w", err) }
+	return count, nil
 }
 
 func (b *LevelDBBackend) nextQueueID(batch *leveldb.Batch) (uint64, error) {
