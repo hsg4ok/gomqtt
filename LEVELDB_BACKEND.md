@@ -77,6 +77,7 @@ interface; deletion failures are reported through the configured Logger.
 ## Tests
 
 The branch CI runs the broker and session package tests on Go 1.20 and Go 1.23,
-including race detection on Go 1.23 and `go vet`. A separate workflow runs the
+including a pure-Go build with CGO disabled, race detection on Go 1.23 and
+`go vet`. A separate workflow runs the
 repository's complete test suite with Mosquitto and generated TLS test
 certificates.
