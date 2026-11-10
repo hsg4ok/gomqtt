@@ -45,6 +45,8 @@ Import `time` and `github.com/256dpi/gomqtt/broker` in the application.
   session.
 - QoS 0 messages are not written to an offline persistent queue. They may be
   buffered in memory while that session is online.
+- `SessionQueueSize` caps queued deliveries per session (including durable
+  QoS 1/2 messages); the default is 1000.
 - A queued QoS 1/2 delivery is removed by the Backend Ack callback only after
   the GoMQTT Client has saved the outgoing packet in its Session. The MQTT
   protocol exchange then continues using the persisted inflight packet.
@@ -68,10 +70,9 @@ recorded error.
 ## Current scope and limitations
 
 This is an initial backend implementation, not a replacement for a full
-production broker review. In particular, persistent offline queue quotas,
-message expiry policies, crash-injection tests, long-running load tests,
-multi-process access, and a full MQTT QoS 2 conformance matrix still require
-additional work. The Backend Ack callback has no error return in the upstream
+production broker review. In particular, message expiry policies, crash-injection tests,
+long-running load tests, multi-process access, and a full MQTT QoS 2 conformance
+matrix still require additional work. The Backend Ack callback has no error return in the upstream
 interface; deletion failures are reported through the configured Logger.
 
 ## Tests
