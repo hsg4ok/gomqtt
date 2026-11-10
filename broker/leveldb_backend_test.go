@@ -28,13 +28,11 @@ func TestLevelDBBackendQueueSequenceUniqueWithinBatch(t *testing.T) {
 	if err != nil { t.Fatal(err) }
 	if first == second { t.Fatalf("queue IDs collided: %d", first) }
 	if err := b.db.Write(batch, b.writeOptions); err != nil { t.Fatal(err) }
-
 	msg := &packet.Message{Topic:"jobs/print", Payload:[]byte("one"), QOS:packet.QOSAtLeastOnce}
 	batch = new(leveldb.Batch)
 	if err := b.enqueueBatch(batch, s, msg); err != nil { t.Fatal(err) }
 	if err := b.enqueueBatch(batch, s, msg); err != nil { t.Fatal(err) }
 	if err := b.db.Write(batch, b.writeOptions); err != nil { t.Fatal(err) }
-
 	iter := b.db.NewIterator(nil, nil)
 	defer iter.Release()
 	prefix := backendQueuePrefix(s.id)
@@ -80,13 +78,9 @@ func TestLevelDBBackendCleanSessionDeletesPersistedState(t *testing.T) {
 		append(backendQueuePrefix(id), []byte{0,0,0,0,0,0,0,1}...),
 		[]byte("gomqtt:session:" + encodeBackendID(id) + ":counter"),
 	}
-	for i, key := range keys {
-		if err := b.db.Put(key, []byte{byte(i+1)}, b.writeOptions); err != nil { t.Fatal(err) }
-	}
+	for i, key := range keys { if err := b.db.Put(key, []byte{byte(i+1)}, b.writeOptions); err != nil { t.Fatal(err) } }
 	if err := b.deletePersistentSession(id); err != nil { t.Fatal(err) }
-	for _, key := range keys {
-		if _, err := b.db.Get(key, nil); err != leveldb.ErrNotFound { t.Fatalf("key %q still exists, err=%v", key, err) }
-	}
+	for _, key := range keys { if _, err := b.db.Get(key, nil); err != leveldb.ErrNotFound { t.Fatalf("key %q still exists, err=%v", key, err) } }
 }
 
 func TestLevelDBBackendQueueSequenceStoredBigEndian(t *testing.T) {
@@ -98,4 +92,93 @@ func TestLevelDBBackendQueueSequenceStoredBigEndian(t *testing.T) {
 	raw, err := b.db.Get([]byte(levelBackendPrefix+"queue-sequence"), nil)
 	if err != nil { t.Fatal(err) }
 	if got := binary.BigEndian.Uint64(raw); got != id { t.Fatalf("stored sequence = %d, want %d", got, id) }
+}
+
+package broker
+
+import (
+	"io"
+	"net"
+	"path/filepath"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/256dpi/gomqtt/packet"
+)
+
+type levelDBTestConn struct {
+	closed chan struct{}
+	once sync.Once
+}
+
+func newLevelDBTestConn() *levelDBTestConn { return &levelDBTestConn{closed:make(chan struct{})} }
+func (c *levelDBTestConn) Send(packet.Generic, bool) error { return nil }
+func (c *levelDBTestConn) Receive() (packet.Generic, error) { <-c.closed; return nil, io.EOF }
+func (c *levelDBTestConn) Close() error { c.once.Do(func(){ close(c.closed) }); return nil }
+func (c *levelDBTestConn) SetReadLimit(int64) {}
+func (c *levelDBTestConn) SetReadTimeout(time.Duration) {}
+func (c *levelDBTestConn) SetMaxWriteDelay(time.Duration) {}
+func (c *levelDBTestConn) LocalAddr() net.Addr { return nil }
+func (c *levelDBTestConn) RemoteAddr() net.Addr { return nil }
+
+func newBackendTestClient(t *testing.T, backend *LevelDBBackend, id string) *Client {
+	t.Helper()
+	client := NewClient(backend, newLevelDBTestConn())
+	client.id = id
+	sess, _, err := backend.Setup(client, id, false)
+	if err != nil { t.Fatal(err) }
+	client.session = sess
+	return client
+}
+
+func closeBackendTestClient(t *testing.T, backend *LevelDBBackend, client *Client) {
+	t.Helper()
+	client.Close()
+	select {
+	case <-client.Closed():
+	case <-time.After(3*time.Second): t.Fatal("client did not close")
+	}
+	if err := backend.Terminate(client); err != nil { t.Fatal(err) }
+}
+
+func TestLevelDBBackendOfflineQoS1DeliverySurvivesRestart(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "persistent-broker.db")
+	backend, err := OpenLevelDBBackend(path)
+	if err != nil { t.Fatal(err) }
+	client := newBackendTestClient(t, backend, "printer-agent-01")
+
+	if err := backend.Subscribe(client, []packet.Subscription{{Topic:"agent/jobs", QOS:packet.QOSAtLeastOnce}}, nil); err != nil { t.Fatal(err) }
+	message := &packet.Message{Topic:"agent/jobs", Payload:[]byte("job-001"), QOS:packet.QOSAtLeastOnce}
+	if err := backend.Publish(client, message, nil); err != nil { t.Fatal(err) }
+	got, ack, err := backend.Dequeue(client)
+	if err != nil { t.Fatal(err) }
+	if got == nil || string(got.Payload) != "job-001" { t.Fatalf("unexpected dequeued message: %#v", got) }
+	if ack == nil { t.Fatal("QoS1 queue item must return an acknowledgement callback") }
+
+	// Simulate a process restart before the outgoing MQTT packet is acknowledged:
+	// do not invoke ack, so the durable queue entry must remain.
+	closeBackendTestClient(t, backend, client)
+	if !backend.Close(3*time.Second) { t.Fatal("backend close timed out") }
+
+	backend, err = OpenLevelDBBackend(path)
+	if err != nil { t.Fatal(err) }
+	defer func(){ if !backend.Close(3*time.Second) { t.Error("reopened backend close timed out") } }()
+	client = newBackendTestClient(t, backend, "printer-agent-01")
+	defer closeBackendTestClient(t, backend, client)
+
+	got, ack, err = backend.Dequeue(client)
+	if err != nil { t.Fatal(err) }
+	if got == nil || string(got.Payload) != "job-001" { t.Fatalf("message was not restored: %#v", got) }
+	if ack == nil { t.Fatal("restored QoS1 queue item has no acknowledgement callback") }
+	ack()
+}
+
+func TestLevelDBBackendQoS0IsNotStoredForOfflineSession(t *testing.T) {
+	backend := openLevelDBBackendTest(t)
+	s := &levelBrokerSession{id:"offline", persistent:true, subscriptions:topic.NewStandardTree()}
+	batch := new(leveldb.Batch)
+	msg := &packet.Message{Topic:"agent/jobs", Payload:[]byte("qos0"), QOS:packet.QOSAtMostOnce}
+	if err := backend.enqueueBatch(batch, s, msg); err != nil { t.Fatal(err) }
+	if batch.Len() != 0 { t.Fatalf("offline QoS0 unexpectedly persisted %d batch bytes", batch.Len()) }
 }
