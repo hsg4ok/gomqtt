@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/256dpi/gomqtt/packet"
+	"github.com/256dpi/gomqtt/topic"
 	"github.com/syndtr/goleveldb/leveldb"
 )
 
